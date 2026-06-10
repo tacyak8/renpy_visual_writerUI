@@ -7,15 +7,17 @@ import TransitionNode from './TransitionNode';
 import StoryMasterNode from './StoryMasterNode';
 import GroupNode from './GroupNode';
 import NoteNode from './NoteNode';
+import ShopNode from './ShopNode';
 import LocationPanel from './LocationPanel';
 import ScenePanel from './ScenePanel';
 import TransitionPanel from './TransitionPanel';
 import StoryMasterPanel from './StoryMasterPanel';
 import SchedulerPanel from './SchedulerPanel';
 import InventoryPanel from './InventoryPanel';
+import ShopPanel from './ShopPanel';
 import { generateScript } from './writer';
 
-const nodeTypes = { location: LocationNode, scene: SceneNode, transition: TransitionNode, storymaster: StoryMasterNode, group: GroupNode, note: NoteNode };
+const nodeTypes = { location: LocationNode, scene: SceneNode, transition: TransitionNode, storymaster: StoryMasterNode, group: GroupNode, note: NoteNode, shop: ShopNode };
 
 // Edge with a small ✕ button at its midpoint. A normal click just selects the
 // edge (then Delete/Backspace removes it); the ✕ removes it instantly.
@@ -354,6 +356,7 @@ export default function App() {
       scene: { label: 'New Scene', choices: [] },
       transition: { label: 'New Transition', mode: 'always', trigger: 'Game Start' },
       note: { title: 'Note', text: '', color: '#f4d35e' },
+      shop: { label: 'New Shop', bg: '', shopkeeperSprite: '', openingBlocks: [], closingBlocks: [], loopBack: false, items: [] },
     };
     const newNode = {
       id: newId,
@@ -631,6 +634,7 @@ const loadProject = useCallback(() => {
               { type: 'location', label: '📍 Location' },
               { type: 'scene', label: '🎬 Scene' },
               { type: 'transition', label: '⚡ Transition' },
+              { type: 'shop', label: '🛒 Shop' },
               { type: 'note', label: '📝 Note' },
             ].map(item => (
               <div key={item.type} onClick={() => addNode(item.type)} style={{ padding: '8px 16px', color: 'white', cursor: 'pointer', fontSize: '13px' }}
@@ -677,6 +681,9 @@ const loadProject = useCallback(() => {
       )}
       {openNode?.type === 'transition' && (
         <TransitionPanel node={openNode} onClose={() => setOpenNode(null)} onUpdateData={updateNodeData} gameData={gameData} />
+      )}
+      {openNode?.type === 'shop' && (
+        <ShopPanel node={openNode} onClose={() => setOpenNode(null)} onUpdateData={updateNodeData} gameData={gameData} />
       )}
       {openNode?.type === 'storymaster' && (
         <StoryMasterPanel node={openNode} onClose={handleStoryMasterClose} gameData={gameData} updateGameData={updateGameData} isFirstTime={!configured} />

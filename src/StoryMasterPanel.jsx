@@ -275,7 +275,7 @@ function StepPlayer({ data, onChange }) {
 function StepPoints({ data, onChange }) {
   const systems = data.pointSystems || [];
 
-  const addSystem = () => onChange({ pointSystems: [...systems, { id: Date.now(), name: '', max: 100, color: '#ffcc44' }] });
+  const addSystem = () => onChange({ pointSystems: [...systems, { id: Date.now(), name: '', max: 100, color: '#ffcc44', hudDisplay: 'bar', hudIcon: '' }] });
   const updateSystem = (id, field, value) => onChange({
     pointSystems: systems.map(s => s.id === id ? { ...s, [field]: value, ...(field === 'name' ? { variable: toVariable(value) } : {}) } : s)
   });
@@ -302,6 +302,34 @@ function StepPoints({ data, onChange }) {
               <label style={labelStyle}>HUD color</label>
               <input type="color" value={sys.color || '#ffcc44'} onChange={e => updateSystem(sys.id, 'color', e.target.value)} style={{ width: '40px', height: '32px', padding: '2px', background: '#2a2a3e', border: '1px solid #444', borderRadius: '4px', cursor: 'pointer', boxSizing: 'border-box' }} />
             </div>
+          </div>
+
+          <div style={{ marginTop: '8px' }}>
+            <label style={labelStyle}>HUD display style</label>
+            <select value={sys.hudDisplay || 'bar'} onChange={e => updateSystem(sys.id, 'hudDisplay', e.target.value)} style={selectStyle}>
+              <option value="bar">Progress bar</option>
+              <option value="counter">Icon + number</option>
+              <option value="number">Number only</option>
+              <option value="pips">Pips (repeated icon)</option>
+              <option value="hidden">Hidden (track only)</option>
+            </select>
+
+            {(sys.hudDisplay === 'counter' || sys.hudDisplay === 'pips') && (
+              <div>
+                <label style={labelStyle}>Icon image name</label>
+                <input
+                  placeholder="e.g. icon heart"
+                  value={sys.hudIcon || ''}
+                  onChange={e => updateSystem(sys.id, 'hudIcon', e.target.value)}
+                  style={inputStyle}
+                />
+                <div style={{ color: '#777', fontSize: '10px' }}>
+                  {sys.hudDisplay === 'pips'
+                    ? 'Image shown N times up to max. Keep max ≤ 10 for readability.'
+                    : 'Image shown next to the number counter.'}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       ))}

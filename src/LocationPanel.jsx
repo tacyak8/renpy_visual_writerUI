@@ -11,6 +11,7 @@ const timeColors = {
 const BLOCK_TYPES = [
   { type: 'dialogue', label: '💬 Dialogue' },
   { type: 'choice', label: '🔀 Choice' },
+  { type: 'question', label: '❓ Question' },
   { type: 'item', label: '🎒 Item' },
   { type: 'sprite', label: '🧍 Sprite' },
   { type: 'bg', label: '🖼 BG Change' },
@@ -20,6 +21,50 @@ const BLOCK_TYPES = [
   { type: 'audio', label: '🔊 Audio' },
   { type: 'endday', label: '💤 End Day' },
 ];
+
+// ---------------------------------------------------------------------------
+// Subpanel path navigation.
+// A subpanel edits a nested blocks array identified by a PATH from the
+// interaction's root blocks. Each path segment is either:
+//   { blockId, optionId }  — an option's blocks inside a choice/question block
+//   { blockId, field }     — a question block's correctBlocks / incorrectBlocks
+// Reading and writing always go through the live interaction object, so nested
+// subpanel edits can never be lost to stale local state.
+// ---------------------------------------------------------------------------
+
+function getBlocksAtPath(rootBlocks, path) {
+  let blocks = rootBlocks || [];
+  for (const seg of path) {
+    const block = blocks.find(b => b.id === seg.blockId);
+    if (!block) return [];
+    if (seg.field) {
+      blocks = block[seg.field] || [];
+    } else {
+      const opt = (block.options || []).find(o => o.id === seg.optionId);
+      if (!opt) return [];
+      blocks = opt.blocks || [];
+    }
+  }
+  return blocks;
+}
+
+function setBlocksAtPath(rootBlocks, path, newBlocks) {
+  if (path.length === 0) return newBlocks;
+  const seg = path[0];
+  const rest = path.slice(1);
+  return (rootBlocks || []).map(b => {
+    if (b.id !== seg.blockId) return b;
+    if (seg.field) {
+      return { ...b, [seg.field]: setBlocksAtPath(b[seg.field] || [], rest, newBlocks) };
+    }
+    return {
+      ...b,
+      options: (b.options || []).map(o =>
+        o.id === seg.optionId ? { ...o, blocks: setBlocksAtPath(o.blocks || [], rest, newBlocks) } : o
+      ),
+    };
+  });
+}
 
 const CONDITION_TYPES = [
   { value: 'flag', label: 'Flag is set' },
@@ -136,6 +181,10 @@ function SingleBlock({ item, onUpdate, depth, onOpenSubpanel, onRemove, gameData
         <ChoiceBlock item={item} onUpdate={onUpdate} depth={depth} onOpenSubpanel={onOpenSubpanel} gameData={gameData} />
       )}
 
+      {item.type === 'question' && (
+        <QuestionBlock item={item} onUpdate={onUpdate} depth={depth} onOpenSubpanel={onOpenSubpanel} gameData={gameData} />
+      )}
+
       {item.type === 'item' && (
         <div>
           <select value={item.action || 'give'} onChange={e => update({ action: e.target.value })} style={selectStyle}>
@@ -224,17 +273,28 @@ function SingleBlock({ item, onUpdate, depth, onOpenSubpanel, onRemove, gameData
 
 function ChoiceBlock({ item, onUpdate, depth, onOpenSubpanel, gameData }) {
   const options = item.options || [
-    { id: 'opt_a', label: 'Option A', text: '' },
-    { id: 'opt_b', label: 'Option B', text: '' },
+    { id: 'opt_a', label: 'Option A', text: '', blocks: [] },
+    { id: 'opt_b', label: 'Option B', text: '', blocks: [] },
   ];
 
   const updateOptions = (newOptions) => onUpdate({ ...item, options: newOptions });
   const addOption = () => {
     const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    updateOptions([...options, { id: `opt_${Date.now()}`, label: `Option ${letters[options.length]}`, text: '' }]);
+    updateOptions([...options, { id: `opt_${Date.now()}`, label: `Option ${letters[options.length]}`, text: '', blocks: [] }]);
   };
   const removeOption = (id) => updateOptions(options.filter(o => o.id !== id));
   const updateText = (id, text) => updateOptions(options.map(o => o.id === id ? { ...o, text } : o));
+
+  const openConsequences = (opt) => {
+    // Materialize default options into node state before opening, so the
+    // subpanel's path write-back has a real options array to navigate.
+    if (!item.options) updateOptions(options);
+    onOpenSubpanel({
+      label: opt.text ? `${opt.label}: ${opt.text}` : opt.label,
+      depth,
+      segment: { blockId: item.id, optionId: opt.id },
+    });
+  };
 
   return (
     <div>
@@ -243,18 +303,150 @@ function ChoiceBlock({ item, onUpdate, depth, onOpenSubpanel, gameData }) {
         <div key={opt.id} style={{ marginBottom: '6px', background: '#1a1a2e', borderRadius: '4px', padding: '6px' }}>
           <div style={{ display: 'flex', gap: '4px', alignItems: 'center', marginBottom: '4px' }}>
             <span style={{ color: '#aaa', fontSize: '11px', minWidth: '60px' }}>{opt.label}</span>
-            <input value={opt.text} onChange={e => updateText(opt.id, e.target.value)} placeholder={`${opt.label} text...`} style={{ ...inputStyle, marginBottom: 0, flex: 1 }} />
+            <input value={opt.text || ''} onChange={e => updateText(opt.id, e.target.value)} placeholder={`${opt.label} text...`} style={{ ...inputStyle, marginBottom: 0, flex: 1 }} />
             <button onClick={() => removeOption(opt.id)} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '12px' }}>✕</button>
           </div>
           {depth < 3 && (
-            <button onClick={() => onOpenSubpanel(opt, depth)} style={{ fontSize: '10px', padding: '3px 8px', background: '#3a5a3a', color: '#aaffaa', border: '1px solid #4a8a4a', borderRadius: '4px', cursor: 'pointer', width: '100%' }}>
-              📋 Edit {opt.label} consequences →
+            <button onClick={() => openConsequences(opt)} style={{ fontSize: '10px', padding: '3px 8px', background: '#3a5a3a', color: '#aaffaa', border: '1px solid #4a8a4a', borderRadius: '4px', cursor: 'pointer', width: '100%' }}>
+              📋 Edit {opt.label} consequences ({(opt.blocks || []).length}) →
             </button>
           )}
           {depth >= 3 && <div style={{ fontSize: '10px', color: '#888', fontStyle: 'italic', textAlign: 'center' }}>Max depth reached</div>}
         </div>
       ))}
       <button onClick={addOption} style={{ fontSize: '10px', background: '#2d4a7a', color: 'white', border: 'none', borderRadius: '4px', padding: '3px 8px', cursor: 'pointer' }}>+ Add Option</button>
+    </div>
+  );
+}
+
+const ANSWER_MODES = [
+  { value: 'typed', label: 'Player types an answer' },
+  { value: 'multiple', label: 'Multiple choice' },
+  { value: 'truefalse', label: 'True / False' },
+];
+
+function QuestionBlock({ item, onUpdate, depth, onOpenSubpanel, gameData }) {
+  const answerMode = item.answerMode || 'typed';
+  const options = item.options || [
+    { id: 'opt_a', label: 'Option A', text: '', isCorrect: false, blocks: [] },
+    { id: 'opt_b', label: 'Option B', text: '', isCorrect: false, blocks: [] },
+  ];
+
+  const update = (changes) => onUpdate({ ...item, ...changes });
+  const updateOptions = (newOptions) => onUpdate({ ...item, options: newOptions });
+
+  const setMode = (mode) => {
+    if (mode === 'truefalse') {
+      // Pre-populate True/False, one marked correct. Preserve any existing
+      // consequence blocks on the first two options.
+      onUpdate({
+        ...item,
+        answerMode: mode,
+        options: [
+          { id: 'opt_true', label: 'Option A', text: 'True', isCorrect: true, blocks: options[0]?.blocks || [] },
+          { id: 'opt_false', label: 'Option B', text: 'False', isCorrect: false, blocks: options[1]?.blocks || [] },
+        ],
+      });
+    } else if (mode === 'multiple') {
+      onUpdate({ ...item, answerMode: mode, options });
+    } else {
+      onUpdate({ ...item, answerMode: mode });
+    }
+  };
+
+  const setCorrect = (id, checked) => {
+    if (answerMode === 'truefalse') {
+      // Exactly one correct answer in true/false.
+      updateOptions(options.map(o => ({ ...o, isCorrect: o.id === id })));
+    } else {
+      updateOptions(options.map(o => o.id === id ? { ...o, isCorrect: checked } : o));
+    }
+  };
+
+  const addOption = () => {
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    updateOptions([...options, { id: `opt_${Date.now()}`, label: `Option ${letters[options.length] || options.length}`, text: '', isCorrect: false, blocks: [] }]);
+  };
+  const removeOption = (id) => updateOptions(options.filter(o => o.id !== id));
+  const updateText = (id, text) => updateOptions(options.map(o => o.id === id ? { ...o, text } : o));
+
+  // Typed mode: synthetic "options" pointing at correctBlocks / incorrectBlocks.
+  const openTypedConsequences = (field) => {
+    onOpenSubpanel({
+      label: field === 'correctBlocks' ? 'Correct answer' : 'Incorrect answer',
+      depth,
+      segment: { blockId: item.id, field },
+    });
+  };
+
+  const openOptionConsequences = (opt) => {
+    if (!item.options) updateOptions(options);
+    onOpenSubpanel({
+      label: opt.text ? `${opt.label}: ${opt.text}` : opt.label,
+      depth,
+      segment: { blockId: item.id, optionId: opt.id },
+    });
+  };
+
+  return (
+    <div>
+      <div style={{ color: '#7aaaff', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px' }}>❓ Question</div>
+      <label style={labelStyle}>Question shown to the player</label>
+      <textarea placeholder="What was inscribed above the tomb door?" value={item.questionText || ''} onChange={e => update({ questionText: e.target.value })} rows={2} style={{ ...inputStyle, resize: 'vertical' }} />
+
+      <label style={labelStyle}>Answer mode</label>
+      <select value={answerMode} onChange={e => setMode(e.target.value)} style={selectStyle}>
+        {ANSWER_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+      </select>
+
+      {answerMode === 'typed' && (
+        <div>
+          <label style={labelStyle}>Correct answer (case-insensitive)</label>
+          <input placeholder="e.g. anubis" value={item.correctAnswer || ''} onChange={e => update({ correctAnswer: e.target.value })} style={inputStyle} />
+          {depth < 3 ? (
+            <div style={{ display: 'flex', gap: '4px' }}>
+              <button onClick={() => openTypedConsequences('correctBlocks')} style={{ flex: 1, fontSize: '10px', padding: '3px 8px', background: '#3a5a3a', color: '#aaffaa', border: '1px solid #4a8a4a', borderRadius: '4px', cursor: 'pointer' }}>
+                ✓ Edit correct consequences ({(item.correctBlocks || []).length}) →
+              </button>
+              <button onClick={() => openTypedConsequences('incorrectBlocks')} style={{ flex: 1, fontSize: '10px', padding: '3px 8px', background: '#5a3a3a', color: '#ffaaaa', border: '1px solid #8a4a4a', borderRadius: '4px', cursor: 'pointer' }}>
+                ✗ Edit incorrect consequences ({(item.incorrectBlocks || []).length}) →
+              </button>
+            </div>
+          ) : (
+            <div style={{ fontSize: '10px', color: '#888', fontStyle: 'italic', textAlign: 'center' }}>Max depth reached</div>
+          )}
+        </div>
+      )}
+
+      {(answerMode === 'multiple' || answerMode === 'truefalse') && (
+        <div>
+          <label style={labelStyle}>Answers</label>
+          {options.map(opt => (
+            <div key={opt.id} style={{ marginBottom: '6px', background: '#1a1a2e', borderRadius: '4px', padding: '6px' }}>
+              <div style={{ display: 'flex', gap: '4px', alignItems: 'center', marginBottom: '4px' }}>
+                <span style={{ color: '#aaa', fontSize: '11px', minWidth: '60px' }}>{opt.label}</span>
+                <input value={opt.text || ''} onChange={e => updateText(opt.id, e.target.value)} placeholder={`${opt.label} text...`} style={{ ...inputStyle, marginBottom: 0, flex: 1 }} />
+                <label style={{ display: 'flex', alignItems: 'center', gap: '3px', color: opt.isCorrect ? '#aaffaa' : '#888', fontSize: '10px', whiteSpace: 'nowrap', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={!!opt.isCorrect} onChange={e => setCorrect(opt.id, e.target.checked)} />
+                  correct
+                </label>
+                {answerMode === 'multiple' && (
+                  <button onClick={() => removeOption(opt.id)} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '12px' }}>✕</button>
+                )}
+              </div>
+              {depth < 3 && (
+                <button onClick={() => openOptionConsequences(opt)} style={{ fontSize: '10px', padding: '3px 8px', background: '#3a5a3a', color: '#aaffaa', border: '1px solid #4a8a4a', borderRadius: '4px', cursor: 'pointer', width: '100%' }}>
+                  📋 Edit {opt.label} consequences ({(opt.blocks || []).length}) →
+                </button>
+              )}
+              {depth >= 3 && <div style={{ fontSize: '10px', color: '#888', fontStyle: 'italic', textAlign: 'center' }}>Max depth reached</div>}
+            </div>
+          ))}
+          {answerMode === 'multiple' && (
+            <button onClick={addOption} style={{ fontSize: '10px', background: '#2d4a7a', color: 'white', border: 'none', borderRadius: '4px', padding: '3px 8px', cursor: 'pointer' }}>+ Add Option</button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -288,9 +480,8 @@ function BlockList({ blocks, onChange, depth, onOpenSubpanel, gameData }) {
   );
 }
 
-function ChoiceSubpanel({ stack, onBack, onOpenSubpanel, gameData }) {
+function ChoiceSubpanel({ stack, blocks, onUpdateBlocks, onBack, onOpenSubpanel, gameData }) {
   const current = stack[stack.length - 1];
-  const [blocks, setBlocks] = useState(current.blocks || []);
 
   return (
     <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: '#1a1a2e', zIndex: 100, display: 'flex', flexDirection: 'column' }}>
@@ -306,9 +497,9 @@ function ChoiceSubpanel({ stack, onBack, onOpenSubpanel, gameData }) {
         <div style={{ color: '#aaffaa', fontSize: '13px', marginBottom: '12px', fontWeight: 'bold' }}>Consequences for: {current.label}</div>
         <BlockList
           blocks={blocks}
-          onChange={setBlocks}
+          onChange={onUpdateBlocks}
           depth={current.depth + 1}
-          onOpenSubpanel={(opt, depth) => onOpenSubpanel([...stack, { ...opt, depth }])}
+          onOpenSubpanel={(entry) => onOpenSubpanel([...stack, { label: entry.label, depth: entry.depth, path: [...current.path, entry.segment] }])}
           gameData={gameData}
         />
       </div>
@@ -384,18 +575,23 @@ function InteractionEditor({ interaction, onUpdate, color, gameData }) {
         blocks={blocks}
         onChange={updateBlocks}
         depth={1}
-        onOpenSubpanel={(opt, depth) => setSubpanelStack([{ ...opt, depth }])}
+        onOpenSubpanel={(entry) => setSubpanelStack([{ label: entry.label, depth: entry.depth, path: [entry.segment] }])}
         gameData={gameData}
       />
 
-      {subpanelStack && (
-        <ChoiceSubpanel
-          stack={subpanelStack}
-          onBack={() => subpanelStack.length > 1 ? setSubpanelStack(subpanelStack.slice(0, -1)) : setSubpanelStack(null)}
-          onOpenSubpanel={(newStack) => setSubpanelStack(newStack)}
-          gameData={gameData}
-        />
-      )}
+      {subpanelStack && subpanelStack.length > 0 && (() => {
+        const top = subpanelStack[subpanelStack.length - 1];
+        return (
+          <ChoiceSubpanel
+            stack={subpanelStack}
+            blocks={getBlocksAtPath(interaction.blocks || [], top.path)}
+            onUpdateBlocks={(newBlocks) => onUpdate({ ...interaction, blocks: setBlocksAtPath(interaction.blocks || [], top.path, newBlocks) })}
+            onBack={() => subpanelStack.length > 1 ? setSubpanelStack(subpanelStack.slice(0, -1)) : setSubpanelStack(null)}
+            onOpenSubpanel={(newStack) => setSubpanelStack(newStack)}
+            gameData={gameData}
+          />
+        );
+      })()}
     </div>
   );
 }

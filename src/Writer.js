@@ -117,23 +117,68 @@ function generateHUDScreen(gameData) {
   if (hud.showPoints) {
     gameData.pointSystems.forEach(sys => {
       if (!sys.name) return;
+      if (sys.hudDisplay === 'hidden') return;
       const v = sys.variable || toVariable(sys.name);
       const color = sys.color || '#ffcc44';
       const maxNum = parseInt(sys.max);
       const hasMax = !isNaN(maxNum) && maxNum > 0;
-      if (hasMax) {
-        // Colored label with value/max, plus a thin manual progress bar (two Solids,
-        // so it doesn't depend on the project's GUI bar style).
-        lines.push('            vbox:');
-        lines.push('                spacing 1');
-        lines.push(`                text "${sys.name}: [${v}]/${maxNum}" size 16 color "${color}"`);
-        lines.push('                fixed:');
-        lines.push('                    xsize 150');
-        lines.push('                    ysize 8');
-        lines.push('                    add Solid("#ffffff22") xysize (150, 8)');
-        lines.push(`                    add Solid("${color}") xysize (int(150 * min(${v}, ${maxNum}) / float(${maxNum})), 8)`);
-      } else {
-        lines.push(`            text "${sys.name}: [${v}]" size 16 color "${color}"`);
+      const display = sys.hudDisplay || 'bar';
+
+      switch (display) {
+        case 'bar': {
+          if (hasMax) {
+            // Colored label with value/max, plus a thin manual progress bar (two Solids,
+            // so it doesn't depend on the project's GUI bar style).
+            lines.push('            vbox:');
+            lines.push('                spacing 1');
+            lines.push(`                text "${sys.name}: [${v}]/${maxNum}" size 16 color "${color}"`);
+            lines.push('                fixed:');
+            lines.push('                    xsize 150');
+            lines.push('                    ysize 8');
+            lines.push('                    add Solid("#ffffff22") xysize (150, 8)');
+            lines.push(`                    add Solid("${color}") xysize (int(150 * min(${v}, ${maxNum}) / float(${maxNum})), 8)`);
+          } else {
+            lines.push(`            text "${sys.name}: [${v}]" size 16 color "${color}"`);
+          }
+          break;
+        }
+        case 'number': {
+          lines.push(`            text "${sys.name}: [${v}]" size 16 color "${color}"`);
+          break;
+        }
+        case 'counter': {
+          const icon = sys.hudIcon || '';
+          if (icon) {
+            lines.push('            hbox:');
+            lines.push('                spacing 4');
+            lines.push(`                add "${icon}" zoom 0.5`);
+            lines.push(`                text "[${v}]" size 16 color "${color}"`);
+          } else {
+            lines.push(`            text "${sys.name}: [${v}]" size 16 color "${color}"`);
+          }
+          break;
+        }
+        case 'pips': {
+          const icon = sys.hudIcon || '';
+          if (icon && hasMax) {
+            // N icons up to max: full opacity when "filled", 0.25 alpha when "empty".
+            // Requires the icon image to exist in game/images.
+            lines.push('            hbox:');
+            lines.push('                spacing 2');
+            lines.push(`                for i in range(${maxNum}):`);
+            lines.push(`                    if i < ${v}:`);
+            lines.push(`                        add "${icon}" zoom 0.4`);
+            lines.push(`                    else:`);
+            lines.push(`                        add "${icon}" zoom 0.4 alpha 0.25`);
+          } else {
+            lines.push(`            text "${sys.name}: [${v}]" size 16 color "${color}"`);
+          }
+          break;
+        }
+        default: {
+          lines.push(`            text "${sys.name}: [${v}]" size 16 color "${color}"`);
+          break;
+        }
       }
     });
   }
@@ -319,10 +364,50 @@ function generateBlock(block, indentLevel = 2, ctx = null) {
     case 'choice': {
       lines.push(`${pad}menu:`);
       (block.options || []).forEach(opt => {
-        const optText = (opt.text || opt.label || '').replace(/"/g, '\\"');
+        const optText = escapeText(opt.text || opt.label || '');
         lines.push(`${pad}    "${optText}":`);
-        lines.push(`${pad}        pass`);
+        // Recursive: a consequence block that is itself a choice emits a nested menu.
+        const consequenceCode = generateBlocks(opt.blocks || [], indentLevel + 2, ctx);
+        if (consequenceCode) {
+          lines.push(consequenceCode);
+        } else {
+          lines.push(`${pad}        pass`);
+        }
       });
+      break;
+    }
+    case 'question': {
+      const mode = block.answerMode || 'typed';
+      if (mode === 'typed') {
+        const q = escapeText(block.questionText || '');
+        // Case-insensitive match: lowercase both the stored answer and the input.
+        const ans = escapeText((block.correctAnswer || '').trim().toLowerCase());
+        lines.push(`${pad}$ player_answer = renpy.input("${q}", length=50)`);
+        lines.push(`${pad}$ player_answer = player_answer.strip().lower()`);
+        lines.push(`${pad}if player_answer == "${ans}":`);
+        const correctCode = generateBlocks(block.correctBlocks || [], indentLevel + 1, ctx);
+        lines.push(correctCode || `${pad}    pass`);
+        lines.push(`${pad}else:`);
+        const incorrectCode = generateBlocks(block.incorrectBlocks || [], indentLevel + 1, ctx);
+        lines.push(incorrectCode || `${pad}    pass`);
+      } else {
+        // multiple / truefalse: emit as a menu. The "correct" flag is for the
+        // designer's reference only — annotate with a comment.
+        lines.push(`${pad}menu:`);
+        if (block.questionText) {
+          lines.push(`${pad}    "${escapeText(block.questionText)}"`);
+        }
+        (block.options || []).forEach(opt => {
+          const optText = escapeText(opt.text || opt.label || '');
+          lines.push(`${pad}    "${optText}":${opt.isCorrect ? '  # correct' : ''}`);
+          const consequenceCode = generateBlocks(opt.blocks || [], indentLevel + 2, ctx);
+          if (consequenceCode) {
+            lines.push(consequenceCode);
+          } else {
+            lines.push(`${pad}        pass`);
+          }
+        });
+      }
       break;
     }
     case 'endday': {
@@ -495,6 +580,75 @@ function getTransitionBetween(sourceId, targetId, nodes, edges) {
   });
 }
 
+function generateShopLabel(node, gameData, nodes) {
+  const d = node.data || {};
+  const shopVar = toVariable(d.label || 'shop');
+  // Unique label per node, same rule as locations: shop_<name>_<nodeid>.
+  const shopKey = `${shopVar}_${node.id}`;
+  const lines = [];
+
+  lines.push(`label shop_${shopKey}:`);
+  if (d.bg) lines.push(`    scene ${d.bg}`);
+  if (d.shopkeeperSprite) lines.push(`    show ${d.shopkeeperSprite}`);
+
+  const openingCode = generateBlocks(d.openingBlocks || [], 1);
+  if (openingCode) lines.push(openingCode);
+
+  lines.push('');
+  // Separate menu label so purchases can loop back without replaying the opening.
+  lines.push(`label shop_${shopKey}_menu:`);
+  lines.push('    menu:');
+
+  const items = (d.items || []).filter(it => it && it.itemVariable);
+  items.forEach(it => {
+    const sys = (gameData.pointSystems || []).find(s =>
+      (s.variable || toVariable(s.name)) === it.pointSystem
+    );
+    const sysVar = it.pointSystem || (sys ? (sys.variable || toVariable(sys.name)) : '');
+    const sysName = sys ? sys.name : (it.pointSystem || 'points');
+    const price = parseInt(it.price) || 0;
+    const name = escapeText(it.itemName || it.itemVariable);
+    const desc = it.description ? ` — ${escapeText(it.description)}` : '';
+
+    if (!sysVar) {
+      // No point system selected: item is free (can't write a valid condition or charge).
+      lines.push(`        "${name}${desc}":`);
+      lines.push(`            $ ${it.itemVariable}_qty += 1`);
+      if (it.buySprite) lines.push(`            show ${it.buySprite}`);
+      if (d.loopBack) lines.push(`            jump shop_${shopKey}_menu`);
+      return;
+    }
+
+    // Two mutually exclusive options per item: the player only ever sees one.
+    lines.push(`        "${name} - ${price} ${sysName}${desc}" if ${sysVar} >= ${price}:`);
+    lines.push(`            $ ${sysVar} -= ${price}`);
+    lines.push(`            $ ${it.itemVariable}_qty += 1`);
+    if (it.buySprite) lines.push(`            show ${it.buySprite}`);
+    if (d.loopBack) lines.push(`            jump shop_${shopKey}_menu`);
+
+    lines.push(`        "${name} - ${price} ${sysName} (can't afford)" if ${sysVar} < ${price}:`);
+    if (it.noSaleSprite) lines.push(`            show ${it.noSaleSprite}`);
+    if (d.loopBack) {
+      lines.push(`            jump shop_${shopKey}_menu`);
+    } else if (!it.noSaleSprite) {
+      lines.push(`            pass`);
+    }
+  });
+
+  // "Leave" is the only branch that falls through to the closing sequence —
+  // with loopBack on, purchases jump back to the menu instead, so the shop
+  // always has a working exit.
+  lines.push('        "Leave":');
+  lines.push('            pass');
+
+  const closingCode = generateBlocks(d.closingBlocks || [], 1);
+  if (closingCode) lines.push(closingCode);
+
+  lines.push('    return');
+  lines.push('');
+  return lines.join('\n');
+}
+
 function generateLocationLabel(node, locationData, connectedLocations, gameData, schedulers, nodes, edges, chapterNum) {
   const locVar = toVariable(node.data.label);
   // Unique label name per node: two same-named locations (e.g. a cloned map in a
@@ -588,7 +742,15 @@ function generateLocationLabel(node, locationData, connectedLocations, gameData,
           }
         }
       }
-      lines.push(`            jump loc_${connVar}`);
+      if (connLoc.type === 'shop') {
+        // Shops end in `return`, so they must be CALLED — a jump would leave an
+        // empty call stack and the return would end the game. After shopping,
+        // re-enter the current location.
+        lines.push(`            call shop_${connVar}`);
+        lines.push(`            jump loc_${locKey}`);
+      } else {
+        lines.push(`            jump loc_${connVar}`);
+      }
       lines.push('');
     });
   }
@@ -638,13 +800,16 @@ function generateChapterLabel(chapterNum, locationNodes, locationData, edges, ga
   locationNodes.forEach(node => {
     const connectedIds = edges
       .filter(e => e.source === node.id || e.target === node.id)
-      .map(e => e.source === node.id ? e.target : e.source)
-      .filter(id => locationNodes.some(n => n.id === id));
+      .map(e => e.source === node.id ? e.target : e.source);
 
+    // Nav targets: locations within this chapter, plus any connected shop node.
     const connectedLocations = connectedIds
-      .map(id => locationNodes.find(n => n.id === id))
+      .map(id =>
+        locationNodes.find(n => n.id === id) ||
+        (allNodes || []).find(n => n.type === 'shop' && n.id === id)
+      )
       .filter(Boolean)
-      .map(n => ({ label: n.data.label, id: n.id }));
+      .map(n => ({ label: n.data.label, id: n.id, type: n.type }));
 
     lines.push(generateLocationLabel(node, locationData, connectedLocations, gameData, schedulers, allNodes, edges, chapterNum));
   });
@@ -868,6 +1033,15 @@ export function generateScript(nodes, edges, gameData) {
     lines.push('# ============================================================');
     lines.push('');
     sceneNodes.forEach(node => lines.push(generateSceneLabel(node)));
+  }
+
+  const shopNodes = nodes.filter(n => n.type === 'shop');
+  if (shopNodes.length > 0) {
+    lines.push('# ============================================================');
+    lines.push('# SHOP NODES');
+    lines.push('# ============================================================');
+    lines.push('');
+    shopNodes.forEach(node => lines.push(generateShopLabel(node, gameData, nodes)));
   }
 
   // Game end transitions
