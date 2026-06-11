@@ -1,3 +1,8 @@
+Visit on itch.io for screen shots:
+
+https://tacyak8.itch.io/renpy-visual-write-ui
+
+
 📖 RPY WRITER — README
 A visual builder for Ren'Py location-based games
 
