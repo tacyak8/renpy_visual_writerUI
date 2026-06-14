@@ -1,3 +1,9 @@
+**Update Incoming in 2-3 days**
+currently have issues with transition nodes and HUD customization breaking things
+
+
+
+
 Visit on itch.io for screen shots:
 
 https://tacyak8.itch.io/renpy-visual-write-ui
